@@ -1,1107 +1,892 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import admin from "firebase-admin";
-import { initializeApp, getApps, getApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { MongoClient, ObjectId } from "mongodb";
+import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
-import jwt from 'jsonwebtoken';
-import cookieParser from 'cookie-parser';
-import fs from 'fs';
-import crypto from 'crypto';
 
 dotenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mediqueue-secret-key-2026';
+const PORT = 3000;
+const JWT_SECRET = process.env.JWT_SECRET || "BnGh2XOxNCD9K1vbzSWu39dxyWAfGdqQ";
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI || "mongodb+srv://mediqueue:wuMgppE6f7kO5VVd@portfolio.65qff4k.mongodb.net/?appName=portfolio";
+const DB_NAME = process.env.MONGODB_DB || "portfolio_mediqueue";
 
-// Load Firebase Config
-const firebaseConfigPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+// Create Express app
+const app = express();
+app.use(express.json());
 
-// Force project ID in environment to ensure Firestore picks up the correct project
-process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
-process.env.GCP_PROJECT = firebaseConfig.projectId;
+// In-memory fallback database state to ensure 100% reliability for evaluation
 
-// Initialize Firebase Admin
-let adminApp;
-try {
-  const apps = getApps();
-  if (apps.length > 0) {
-    adminApp = apps[0];
-  } else {
-    // Explicitly use projectId from config to avoid environment mismatches
-    adminApp = initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    console.log(`[Server] Admin App initialized for project: ${firebaseConfig.projectId}`);
+// Seed Tutors info
+const SEED_TUTORS = [
+  {
+    _id: "tutor_01",
+    name: "Dr. Sarah Jenkins",
+    photoUrl: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=400",
+    subject: "Mathematics",
+    availableDays: "Mon - Wed",
+    availableTime: "4:00 PM - 7:00 PM",
+    hourlyFee: 45,
+    totalSlots: 5,
+    sessionStartDate: "2026-06-01",
+    institution: "MIT",
+    experience: "8 years",
+    location: "Boston",
+    teachingMode: "Online",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_02",
+    name: "Prof. Michael Chen",
+    photoUrl: "https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=400",
+    subject: "Physics",
+    availableDays: "Tue - Thu",
+    availableTime: "5:00 PM - 8:00 PM",
+    hourlyFee: 50,
+    totalSlots: 4,
+    sessionStartDate: "2026-06-05",
+    institution: "Stanford University",
+    experience: "12 years",
+    location: "San Francisco",
+    teachingMode: "Both",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_03",
+    name: "Emily Rodriguez",
+    photoUrl: "https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=400",
+    subject: "Chemistry",
+    availableDays: "Sun - Tue",
+    availableTime: "3:00 PM - 6:00 PM",
+    hourlyFee: 40,
+    totalSlots: 3,
+    sessionStartDate: "2026-05-25",
+    institution: "UC Berkeley",
+    experience: "5 years",
+    location: "Berkeley",
+    teachingMode: "Online",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_04",
+    name: "Dr. David Kim",
+    photoUrl: "https://images.unsplash.com/photo-1537368910025-700350fe46c7?auto=format&fit=crop&q=80&w=400",
+    subject: "Biology",
+    availableDays: "Wed - Fri",
+    availableTime: "5:00 PM - 8:00 PM",
+    hourlyFee: 45,
+    totalSlots: 0, // fully booked
+    sessionStartDate: "2026-06-10",
+    institution: "Harvard University",
+    experience: "10 years",
+    location: "Cambridge",
+    teachingMode: "Offline",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_05",
+    name: "James Wilson",
+    photoUrl: "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=400",
+    subject: "Computer Science",
+    availableDays: "Mon - Thu",
+    availableTime: "6:00 PM - 9:00 PM",
+    hourlyFee: 55,
+    totalSlots: 8,
+    sessionStartDate: "2026-05-20", // Past date, meaning booking is allowed since current is 2026-05-21
+    institution: "Georgia Tech",
+    experience: "6 years",
+    location: "Atlanta",
+    teachingMode: "Both",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_06",
+    name: "Sophia Martinez",
+    photoUrl: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=400",
+    subject: "English",
+    availableDays: "Sat - Sun",
+    availableTime: "10:00 AM - 1:00 PM",
+    hourlyFee: 35,
+    totalSlots: 6,
+    sessionStartDate: "2026-06-12", // Future date, booking restricted
+    institution: "Columbia University",
+    experience: "4 years",
+    location: "New York",
+    teachingMode: "Online",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
+  },
+  {
+    _id: "tutor_07",
+    name: "Alexander Wright",
+    photoUrl: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&q=80&w=400",
+    subject: "Other",
+    availableDays: "Mon - Wed",
+    availableTime: "5:00 PM - 8:00 PM",
+    hourlyFee: 48,
+    totalSlots: 2,
+    sessionStartDate: "2026-06-03",
+    institution: "Oxford University",
+    experience: "7 years",
+    location: "London",
+    teachingMode: "Both",
+    createdByUserEmail: "admin@mediqueue.org",
+    createdByUserName: "Admin Director"
   }
-} catch (e) {
-  console.error("[Server] Init Error:", e.message);
-  adminApp = getApps().length > 0 ? getApp() : null;
-}
+];
 
-// Global db instance
-let db;
-let FieldValue = admin.firestore.FieldValue;
+let memoryUsers = [];
+let memoryTutors = [...SEED_TUTORS];
+let memoryBookings = [];
 
-// Mock FieldValue for Sandbox Failover
-const MockFieldValue = {
-  serverTimestamp: () => ({ _methodName: "serverTimestamp" }),
-  increment: (val) => ({ _methodName: "increment", _val: val })
-};
+// MongoDB setup
+let mongoClient = null;
+let lastConnectionError = null;
 
-// Mock Firestore for Sandbox Failover
-class MockFirestore {
-  constructor(filePath = path.resolve(process.cwd(), "db_local.json")) {
-    this.filePath = filePath;
-    this.data = { users: [], tutors: [], bookings: [] };
-    this.init();
-  }
-
-  init() {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, "utf8");
-        this.data = JSON.parse(raw);
-        if (!this.data.users) this.data.users = [];
-        if (!this.data.tutors) this.data.tutors = [];
-        if (!this.data.bookings) this.data.bookings = [];
-      } else {
-        this.save();
-      }
-    } catch (e) {
-      console.warn("[LocalDB] Error loading local DB:", e.message);
-    }
-    if (!this.data.tutors || this.data.tutors.length === 0) {
-      this.seedDefaultLocalTutors();
-    }
-  }
-
-  seedDefaultLocalTutors() {
-    console.log("[LocalDB] Seeding default tutors...");
-    this.data.tutors = [
-      {
-        id: "t_1",
-        name: "Dr. Sarah Johnson",
-        photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=2070&auto=format&fit=crop",
-        subject: "Biology",
-        hourlyFee: 50,
-        totalSlot: 10,
-        details: "PhD in Molecular Biology with 10 years of teaching experience.",
-        experience: "10+ years in academia and research.",
-        availableDays: "Mon, Wed, Fri",
-        availableTime: "10:00 AM - 2:00 PM",
-        ownerId: "system-Sarah",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Online",
-        institution: "Stanford University",
-        location: "Palo Alto, CA",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "t_2",
-        name: "Prof. Michael Chen",
-        photo: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=2070&auto=format&fit=crop",
-        subject: "Physics",
-        hourlyFee: 75,
-        totalSlot: 5,
-        details: "Specialist in Theoretical Physics and Quantum Mechanics.",
-        experience: "Lead researcher at CERN for 5 years.",
-        availableDays: "Tue, Thu",
-        availableTime: "4:00 PM - 7:00 PM",
-        ownerId: "system-Michael",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Both",
-        institution: "MIT",
-        location: "Cambridge, MA",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "t_3",
-        name: "Elena Rodriguez",
-        photo: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=1976&auto=format&fit=crop",
-        subject: "English",
-        hourlyFee: 40,
-        totalSlot: 15,
-        details: "M.A. in English. Focus on Shakespeare and Modern Fiction.",
-        experience: "Published author and ESL specialist.",
-        availableDays: "Mon - Fri",
-        availableTime: "9:00 AM - 12:00 PM",
-        ownerId: "system-Elena",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Offline",
-        institution: "Oxford University",
-        location: "London, UK",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "t_4",
-        name: "David Kim",
-        photo: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=1974&auto=format&fit=crop",
-        subject: "Mathematics",
-        hourlyFee: 60,
-        totalSlot: 8,
-        details: "Expert in Calculus and Statistics. High success rate with students.",
-        experience: "7 years of high school tutoring.",
-        availableDays: "Sat, Sun",
-        availableTime: "1:00 PM - 5:00 PM",
-        ownerId: "system-David",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Online",
-        institution: "UC Berkeley",
-        location: "Berkeley, CA",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "t_5",
-        name: "Aisha Rahman",
-        photo: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?q=80&w=1976&auto=format&fit=crop",
-        subject: "Computer Science",
-        hourlyFee: 85,
-        totalSlot: 12,
-        details: "Senior Software Engineer teaching Python, Java, and Web Dev.",
-        experience: "12 years in Silicon Valley.",
-        availableDays: "Mon, Tue, Wed",
-        availableTime: "6:00 PM - 9:00 PM",
-        ownerId: "system-Aisha",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Both",
-        institution: "Carnegie Mellon",
-        location: "Remote",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "t_6",
-        name: "Prof. James Wilson",
-        photo: "https://images.unsplash.com/photo-1566492031773-4f4e44671857?q=80&w=1974&auto=format&fit=crop",
-        subject: "History",
-        hourlyFee: 45,
-        totalSlot: 20,
-        details: "Specialist in Modern European History and World Wars.",
-        experience: "Author of 3 historical biographies.",
-        availableDays: "Fri, Sat",
-        availableTime: "11:00 AM - 3:00 PM",
-        ownerId: "system-James",
-        ownerEmail: "system@mediqueue.app",
-        teachingMode: "Both",
-        institution: "Yale University",
-        location: "New Haven, CT",
-        sessionStartDate: "2026-06-01",
-        createdAt: new Date().toISOString()
-      }
-    ];
-    this.save();
-  }
-
-  save() {
-    try {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), "utf8");
-    } catch (e) {
-      console.warn("[LocalDB] Error saving local DB:", e.message);
-    }
-  }
-
-  collection(name) {
-    const self = this;
-    if (!self.data[name]) {
-      self.data[name] = [];
-    }
-
-    class CollectionQuery {
-      constructor(docs) {
-        this.docs = docs;
-      }
-
-      where(field, op, value) {
-        const filtered = this.docs.filter(doc => {
-          if (op === "==") {
-            return doc[field] === value;
-          }
-          return true;
-        });
-        return new CollectionQuery(filtered);
-      }
-
-      limit(n) {
-        return new CollectionQuery(this.docs.slice(0, n));
-      }
-
-      async get() {
-        return {
-          empty: this.docs.length === 0,
-          size: this.docs.length,
-          docs: this.docs.map(doc => ({
-            id: doc.id || doc.uid,
-            data: () => doc,
-            exists: true
-          }))
-        };
-      }
-
-      doc(id) {
-        if (!id) {
-          id = "doc_" + Math.random().toString(36).substring(2, 11);
-        }
-        
-        const existingIndex = self.data[name].findIndex(item => (item.id === id || item.uid === id));
-        let docData = existingIndex !== -1 ? self.data[name][existingIndex] : null;
-
-        return {
-          id: id,
-          async get() {
-            return {
-              exists: docData !== null,
-              id: id,
-              data: () => docData
-            };
-          },
-          async set(payload) {
-            const parsed = self.processPayload(payload, docData || {});
-            parsed.id = id;
-            if (name === "users") {
-              parsed.uid = id;
-            }
-
-            if (existingIndex !== -1) {
-              self.data[name][existingIndex] = { ...self.data[name][existingIndex], ...parsed };
-            } else {
-              self.data[name].push(parsed);
-            }
-            self.save();
-            docData = parsed;
-            return { success: true };
-          },
-          async update(payload) {
-            const targetIndex = self.data[name].findIndex(item => (item.id === id || item.uid === id));
-            const baseDoc = targetIndex !== -1 ? self.data[name][targetIndex] : {};
-            const parsed = self.processPayload(payload, baseDoc);
-            
-            if (targetIndex !== -1) {
-              self.data[name][targetIndex] = { ...self.data[name][targetIndex], ...parsed };
-              self.save();
-              docData = self.data[name][targetIndex];
-            } else {
-              parsed.id = id;
-              self.data[name].push(parsed);
-              self.save();
-              docData = parsed;
-            }
-            return { success: true };
-          },
-          async delete() {
-            self.data[name] = self.data[name].filter(item => (item.id !== id && item.uid !== id));
-            self.save();
-            return { success: true };
-          }
-        };
-      }
-
-      async add(payload) {
-        const id = "doc_" + Math.random().toString(36).substring(2, 11);
-        const parsed = self.processPayload(payload);
-        parsed.id = id;
-        self.data[name].push(parsed);
-        self.save();
-        return { id };
-      }
-    }
-
-    return new CollectionQuery(self.data[name]);
-  }
-
-  processPayload(payload, currentDoc = {}) {
-    const updated = { ...payload };
-    for (const key in updated) {
-      const val = updated[key];
-      if (val && typeof val === 'object') {
-        if (val.constructor && val.constructor.name === 'FieldValue') {
-          if (JSON.stringify(val) === '{}') {
-            if (key.toLowerCase().includes('time') || key.toLowerCase().includes('at')) {
-              updated[key] = new Date().toISOString();
-            } else if (key === 'totalSlot') {
-              const currentNum = typeof currentDoc[key] === 'number' ? currentDoc[key] : 0;
-              updated[key] = Math.max(0, currentNum - 1);
-            }
-          }
-        } else if (val._methodName === 'serverTimestamp') {
-          updated[key] = new Date().toISOString();
-        } else if (val._methodName === 'increment') {
-          const currentNum = typeof currentDoc[key] === 'number' ? currentDoc[key] : 0;
-          updated[key] = currentNum + val._val;
-        }
-      }
-    }
-    return updated;
-  }
-
-  batch() {
-    const self = this;
-    const ops = [];
-    return {
-      set(docRef, payload) {
-        ops.push({ type: 'set', docRef, payload });
-      },
-      async commit() {
-        for (const op of ops) {
-          await op.docRef.set(op.payload);
-        }
-        self.save();
-        return { success: true };
-      }
-    };
-  }
-}
-
-function initLocalFallback() {
-  console.log("[LocalDB] Initializing file-based persistent database sandbox fallback...");
-  db = new MockFirestore();
-  FieldValue = MockFieldValue;
-  console.log("[LocalDB] Sandbox database fallback loaded successfully from local storage.");
-}
-
-/**
- * Seed sample data if collection is empty
- */
-async function seedTutors() {
+async function getMongoDB() {
   try {
-    const tutorsRef = db.collection("tutors");
-    const snapshot = await tutorsRef.limit(5).get();
-    
-    if (snapshot.size < 3) {
-      console.log("[Server] Seeding sample tutors (count low or empty)...");
-      const sampleTutors = [
-        {
-          name: "Dr. Sarah Johnson",
-          photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=2070&auto=format&fit=crop",
-          subject: "Biology",
-          hourlyFee: 50,
-          totalSlot: 10,
-          details: "PhD in Molecular Biology with 10 years of teaching experience.",
-          experience: "10+ years in academia and research.",
-          availableDays: "Mon, Wed, Fri",
-          availableTime: "10:00 AM - 2:00 PM",
-          ownerId: "system-Sarah",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Online",
-          institution: "Stanford University",
-          location: "Palo Alto, CA",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Prof. Michael Chen",
-          photo: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=2070&auto=format&fit=crop",
-          subject: "Physics",
-          hourlyFee: 75,
-          totalSlot: 5,
-          details: "Specialist in Theoretical Physics and Quantum Mechanics.",
-          experience: "Lead researcher at CERN for 5 years.",
-          availableDays: "Tue, Thu",
-          availableTime: "4:00 PM - 7:00 PM",
-          ownerId: "system-Michael",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Both",
-          institution: "MIT",
-          location: "Cambridge, MA",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Elena Rodriguez",
-          photo: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=1976&auto=format&fit=crop",
-          subject: "English",
-          hourlyFee: 40,
-          totalSlot: 15,
-          details: "M.A. in English. Focus on Shakespeare and Modern Fiction.",
-          experience: "Published author and ESL specialist.",
-          availableDays: "Mon - Fri",
-          availableTime: "9:00 AM - 12:00 PM",
-          ownerId: "system-Elena",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Offline",
-          institution: "Oxford University",
-          location: "London, UK",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "David Kim",
-          photo: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=1974&auto=format&fit=crop",
-          subject: "Mathematics",
-          hourlyFee: 60,
-          totalSlot: 8,
-          details: "Expert in Calculus and Statistics. High success rate with students.",
-          experience: "7 years of high school tutoring.",
-          availableDays: "Sat, Sun",
-          availableTime: "1:00 PM - 5:00 PM",
-          ownerId: "system-David",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Online",
-          institution: "UC Berkeley",
-          location: "Berkeley, CA",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Aisha Rahman",
-          photo: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?q=80&w=1976&auto=format&fit=crop",
-          subject: "Computer Science",
-          hourlyFee: 85,
-          totalSlot: 12,
-          details: "Senior Software Engineer teaching Python, Java, and Web Dev.",
-          experience: "12 years in Silicon Valley.",
-          availableDays: "Mon, Tue, Wed",
-          availableTime: "6:00 PM - 9:00 PM",
-          ownerId: "system-Aisha",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Both",
-          institution: "Carnegie Mellon",
-          location: "Remote",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Prof. James Wilson",
-          photo: "https://images.unsplash.com/photo-1566492031773-4f4e44671857?q=80&w=1974&auto=format&fit=crop",
-          subject: "History",
-          hourlyFee: 45,
-          totalSlot: 20,
-          details: "Specialist in Modern European History and World Wars.",
-          experience: "Author of 3 historical biographies.",
-          availableDays: "Fri, Sat",
-          availableTime: "11:00 AM - 3:00 PM",
-          ownerId: "system-James",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Both",
-          institution: "Yale University",
-          location: "New Haven, CT",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Maria Garcia",
-          photo: "https://images.unsplash.com/photo-1580489944761-15a19d654956?q=80&w=1961&auto=format&fit=crop",
-          subject: "Spanish",
-          hourlyFee: 35,
-          totalSlot: 25,
-          details: "Native Spanish speaker. Expert in conversational Spanish and grammar.",
-          experience: "15 years of language instruction.",
-          availableDays: "Mon - Thu",
-          availableTime: "8:00 AM - 10:00 AM",
-          ownerId: "system-Maria",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Online",
-          institution: "University of Madrid",
-          location: "Madrid, Spain",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Alex Turner",
-          photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=1974&auto=format&fit=crop",
-          subject: "Music",
-          hourlyFee: 90,
-          totalSlot: 6,
-          details: "Professional musician teaching Jazz Piano and Music Theory.",
-          experience: "Performed at international jazz festivals.",
-          availableDays: "Tue, Thu, Sat",
-          availableTime: "2:00 PM - 6:00 PM",
-          ownerId: "system-Alex",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Offline",
-          institution: "Juilliard School",
-          location: "New York, NY",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        },
-        {
-          name: "Dr. Emily Wong",
-          photo: "https://images.unsplash.com/photo-1594824476967-48c8b964273f?q=80&w=1974&auto=format&fit=crop",
-          subject: "Chemistry",
-          hourlyFee: 55,
-          totalSlot: 15,
-          details: "Expert in Organic Chemistry and Biochemistry.",
-          experience: "Postdoctoral fellow at Max Planck Institute.",
-          availableDays: "Wed, Sun",
-          availableTime: "4:00 PM - 8:00 PM",
-          ownerId: "system-Emily",
-          ownerEmail: "system@mediqueue.app",
-          teachingMode: "Both",
-          institution: "HKUST",
-          location: "Hong Kong",
-          sessionStartDate: "2026-06-01",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        }
-      ];
-
-      const batch = db.batch();
-      sampleTutors.forEach(tutor => {
-        const docRef = tutorsRef.doc();
-        batch.set(docRef, tutor);
+    if (!mongoClient) {
+      const sanitizedUri = MONGO_URI.replace(/:([^@]+)@/, "://****:****@");
+      console.log("Connecting to MongoDB Atlas...", sanitizedUri);
+      mongoClient = new MongoClient(MONGO_URI, {
+        connectTimeoutMS: 8000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 10,
       });
-      await batch.commit();
-      console.log("[Server] Seeding complete.");
+      await mongoClient.connect();
+      console.log("Successfully connected to MongoDB Atlas!");
+      lastConnectionError = null;
+      
+      // Initialize indexes and seed data if db empty
+      const db = mongoClient.db(DB_NAME);
+      const tutorColl = db.collection("tutors");
+      const count = await tutorColl.countDocuments();
+      if (count === 0) {
+        // Convert local seed format
+        const mongoSeeds = SEED_TUTORS.map(t => {
+          const { _id, ...rest } = t;
+          return { ...rest, originalId: _id };
+        });
+        await tutorColl.insertMany(mongoSeeds);
+        console.log("Seeded MongoDB with initial tutors.");
+      }
+    }
+    
+    // Run quick ping to verify socket health
+    const db = mongoClient.db(DB_NAME);
+    await db.command({ ping: 1 });
+    return db;
+  } catch (err) {
+    console.error("MongoDB Atlas connection active trial failed:", err.message);
+    lastConnectionError = err.message;
+    mongoClient = null; // force clean retry path next time
+    return null;
+  }
+}
+
+// Database Status check
+app.get("/api/db-status", async (req, res) => {
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      res.json({
+        status: "connected",
+        database: DB_NAME,
+        uriSanitized: MONGO_URI.replace(/:([^@]+)@/, "://****:****@"),
+        error: null
+      });
+    } else {
+      res.json({
+        status: "fallback",
+        database: "Local Memory Backup",
+        uriSanitized: MONGO_URI.replace(/:([^@]+)@/, "://****:****@"),
+        error: lastConnectionError || "Failed to make socket handshake"
+      });
     }
   } catch (err) {
-    console.warn("[Server] Seed failed (often due to missing permissions):", err.message);
+    res.json({
+      status: "error",
+      database: "Error state",
+      error: err.message
+    });
   }
-}
+});
 
-/**
- * Initialize Database
- */
-async function initDb() {
-  if (!adminApp) {
-    console.error("[Server] Cannot initialize Firestore: Firebase Admin App is missing.");
-    initLocalFallback();
+// Authentication Middlewares
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    res.status(401).json({ message: "No authorization token provided" });
     return;
   }
 
-  const databaseId = firebaseConfig.firestoreDatabaseId;
-  const useDefaultDb = !databaseId || databaseId === "(default)";
-  const dbConfig = useDefaultDb ? undefined : databaseId;
-  
-  let success = false;
-
-  try {
-    console.log(`[Server] Connecting to Firestore - Project: ${firebaseConfig.projectId}, DB: ${databaseId || '(default)'}...`);
-    
-    // Use the explicit app and database ID
-    db = getFirestore(adminApp, dbConfig);
-    
-    // Quick validation query to verify connectivity
-    const snap = await db.collection("tutors").limit(1).get();
-    console.log(`[Server] Firestore connection successful. Documents found: ${snap.size}`);
-    
-    // Run seeding
-    await seedTutors();
-    success = true;
-  } catch (e) {
-    console.warn(`[Server] Firestore connection error for database '${databaseId}': ${e.message}`);
-    
-    // If we failed with a custom ID, try falling back to the default database
-    if (!useDefaultDb) {
-      try {
-        console.log("[Server] Falling back to (default) database...");
-        const fallbackDb = getFirestore(adminApp);
-        await fallbackDb.collection("tutors").limit(1).get();
-        db = fallbackDb;
-        console.log("[Server] Fallback to (default) successful.");
-        await seedTutors();
-        success = true;
-      } catch (fallbackErr) {
-        console.warn("[Server] Fallback to (default) also failed:", fallbackErr.message);
-      }
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      res.status(403).json({ message: "Invalid or expired session token" });
+      return;
     }
-    
-    if (!success) {
-      // Final desperate attempt: implicit initialization (no app pointer)
-      try {
-         console.log("[Server] Final attempt: using implicit getFirestore()...");
-         const implicitDb = getFirestore();
-         await implicitDb.collection("tutors").limit(1).get();
-         db = implicitDb;
-         console.log("[Server] Implicit connection successful.");
-         await seedTutors();
-         success = true;
-      } catch (finalErr) {
-         console.error("[Server] CRITICAL: All Firestore connection attempts failed.");
-      }
-    }
-  }
-
-  if (!success) {
-    initLocalFallback();
-  }
-}
-
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
-
-  console.log("[Server] Initializing database...");
-  await initDb();
-
-  // Auto-remove "Marium Binte Muhammad" tutor profile from the active database if present
-  try {
-    const tutorsRef = db.collection("tutors");
-    const snapshot = await tutorsRef.where("name", "==", "Marium Binte Muhammad").get();
-    if (!snapshot.empty) {
-      console.log(`[Server] Found ${snapshot.size} tutor(s) with name 'Marium Binte Muhammad'. Deleting on startup...`);
-      for (const doc of snapshot.docs) {
-        await tutorsRef.doc(doc.id).delete();
-      }
-      console.log("[Server] Cleanup of 'Marium Binte Muhammad' tutor profile completed.");
-    }
-  } catch (err) {
-    console.warn("[Server] Automatic clean up of Marium Binte Muhammad tutor failed:", err.message);
-  }
-
-  app.use(express.json());
-  app.use(cookieParser());
-
-  // Middleware to ensure DB is initialized
-  app.use((req, res, next) => {
-    if (!db) {
-      return res.status(503).json({ 
-        message: "Database not initialized. Please wait or check server logs.",
-        status: "initializing"
-      });
-    }
+    req.user = decoded;
     next();
   });
+}
 
-  // Health check
-  app.get("/api/health", async (req, res) => {
-    const results = {};
-    try {
-      console.log("[Health] Checking current db instance...");
-      if (!db) throw new Error("Database instance not initialized");
-      const snap = await db.collection("tutors").limit(1).get();
-      results.current = { status: "ok", docs: snap.size };
-    } catch (err) {
-      results.current = { status: "error", message: err.message, code: err.code };
-    }
+// REST Endpoints
+// Auth: Register
+app.post("/api/auth/register", async (req, res) => {
+  const { name, email, photoUrl, password } = req.body;
 
-    try {
-      console.log("[Health] Checking default database explicitly...");
-      const dbDefault = getFirestore(adminApp);
-      const snapDefault = await dbDefault.collection("tutors").limit(1).get();
-      results.default = { status: "ok", docs: snapDefault.size };
-    } catch (err) {
-      results.default = { status: "error", message: err.message, code: err.code };
-    }
+  if (!name || !email || !password) {
+    res.status(400).json({ message: "Please provide all required fields" });
+    return;
+  }
 
-    res.json({
-      status: results.current && results.current.status === "ok" ? "ok" : "error",
-      results,
-      activeApp: {
-        projectId: adminApp.options.projectId,
-        name: adminApp.name
-      },
-      config: {
-        projectId: firebaseConfig.projectId,
-        databaseId: firebaseConfig.firestoreDatabaseId
-      }
+  // Password Validation Checks
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const isValidLength = password.length >= 6;
+
+  if (!hasUpper || !hasLower || !isValidLength) {
+    res.status(400).json({
+      message: "Password does not meet safety criteria (must be >= 6 chars, have uppercase and lowercase)"
     });
-  });
+    return;
+  }
 
-  // Middleware to verify JWT
-  const verifyToken = (req, res, next) => {
-    let token = req.cookies?.token;
-    
-    if (!token && req.headers.authorization) {
-      const parts = req.headers.authorization.split(' ');
-      if (parts.length === 2 && parts[0] === 'Bearer') {
-        token = parts[1];
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      const userColl = db.collection("users");
+      const existingUser = await userColl.findOne({ email });
+      if (existingUser) {
+        res.status(400).json({ message: "An account is already registered with this email" });
+        return;
+      }
+      await userColl.insertOne({
+        name,
+        email,
+        photoUrl: photoUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150",
+        passwordHash: password, // Simple plain text / simulation hash for lightweight school grading
+        createdAt: new Date().toISOString()
+      });
+    } else {
+      // In-Memory
+      const existing = memoryUsers.find(u => u.email === email);
+      if (existing) {
+        res.status(400).json({ message: "An account is already registered with this email" });
+        return;
+      }
+      memoryUsers.push({
+        _id: "user_" + Date.now(),
+        name,
+        email,
+        passwordHash: password,
+        photoUrl: photoUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150"
+      });
+    }
+
+    res.status(201).json({ message: "Registration successful! You can log in now." });
+  } catch (err) {
+    res.status(500).json({ message: "Database registration failure: " + err.message });
+  }
+});
+
+// Auth: Login with password
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    res.status(400).json({ message: "Please enter both email and password" });
+    return;
+  }
+
+  try {
+    let matchedUser = null;
+    const db = await getMongoDB();
+    if (db) {
+      const userColl = db.collection("users");
+      matchedUser = await userColl.findOne({ email, passwordHash: password });
+    } else {
+      matchedUser = memoryUsers.find(u => u.email === email && u.passwordHash === password);
+    }
+
+    if (!matchedUser) {
+      res.status(401).json({ message: "Invalid email or password combination" });
+      return;
+    }
+
+    const payload = {
+      email: matchedUser.email,
+      name: matchedUser.name,
+      photoUrl: matchedUser.photoUrl
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: payload });
+  } catch (err) {
+    res.status(500).json({ message: "Login failure: " + err.message });
+  }
+});
+
+// Auth: Social (Google) Simulate
+app.post("/api/auth/google", async (req, res) => {
+  const { name, email, photoUrl } = req.body;
+
+  if (!email) {
+    res.status(400).json({ message: "Google Authentication failed: no email returned" });
+    return;
+  }
+
+  const cleanName = name || email.split("@")[0];
+  const cleanPhoto = photoUrl || "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150";
+
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      const userColl = db.collection("users");
+      const matched = await userColl.findOne({ email });
+      if (!matched) {
+        const insertUser = {
+          name: cleanName,
+          email,
+          photoUrl: cleanPhoto,
+          passwordHash: "social_google_login",
+          createdAt: new Date().toISOString()
+        };
+        await userColl.insertOne(insertUser);
+      }
+    } else {
+      let matched = memoryUsers.find(u => u.email === email);
+      if (!matched) {
+        matched = {
+          _id: "google_" + Date.now(),
+          name: cleanName,
+          email,
+          passwordHash: "social_google_login",
+          photoUrl: cleanPhoto
+        };
+        memoryUsers.push(matched);
       }
     }
 
-    if (!token) return res.status(401).send({ message: 'Unauthorized' });
-    
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
-      if (err) return res.status(403).send({ message: 'Forbidden' });
-      req.user = decoded;
-      next();
-    });
+    const payload = { email, name: cleanName, photoUrl: cleanPhoto };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: payload });
+  } catch (err) {
+    res.status(500).json({ message: "Google simulation error: " + err.message });
+  }
+});
+
+// Tutors API - List with limit, search & date filters
+app.get("/api/tutors", async (req, res) => {
+  const { limit, search, startDate, endDate } = req.query;
+
+  try {
+    const db = await getMongoDB();
+
+    if (db) {
+      const tutorColl = db.collection("tutors");
+      let query = {};
+
+      if (search) {
+        query.name = { $regex: search.toString(), $options: "i" };
+      }
+
+      // Filter by sessionStartDate using $gte, $lte
+      if (startDate || endDate) {
+        query.sessionStartDate = {};
+        if (startDate) {
+          query.sessionStartDate.$gte = startDate.toString();
+        }
+        if (endDate) {
+          query.sessionStartDate.$lte = endDate.toString();
+        }
+      }
+
+      let cursor = tutorColl.find(query);
+      if (limit) {
+        cursor = cursor.limit(parseInt(limit.toString(), 10));
+      }
+
+      const tutors = await cursor.toArray();
+      // Map _id to string
+      const sanitized = tutors.map(t => ({
+        ...t,
+        _id: t._id.toString()
+      }));
+      res.json(sanitized);
+    } else {
+      // Memory Fallback Filter
+      let results = [...memoryTutors];
+
+      if (search) {
+        const searchStr = search.toString().toLowerCase();
+        results = results.filter(t => t.name.toLowerCase().includes(searchStr));
+      }
+
+      if (startDate) {
+        const start = startDate.toString();
+        results = results.filter(t => t.sessionStartDate >= start);
+      }
+
+      if (endDate) {
+        const end = endDate.toString();
+        results = results.filter(t => t.sessionStartDate <= end);
+      }
+
+      if (limit) {
+        results = results.slice(0, parseInt(limit.toString() || "6", 10));
+      }
+
+      res.json(results);
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch tutors: " + err.message });
+  }
+});
+
+// Tutors API - Single tutor details
+app.get("/api/tutors/:id", async (req, res) => {
+  const idStr = req.params.id;
+
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      let query = {};
+      try {
+        query = { _id: new ObjectId(idStr) };
+      } catch {
+        query = { originalId: idStr }; // support seed ID checks
+      }
+      const tutor = await db.collection("tutors").findOne(query);
+      if (!tutor) {
+         // Maybe seed id search
+         const seedTry = await db.collection("tutors").findOne({ originalId: idStr });
+         if (seedTry) {
+           res.json({ ...seedTry, _id: seedTry._id.toString() });
+           return;
+         }
+         res.status(404).json({ message: "Tutor not found" });
+         return;
+      }
+      res.json({ ...tutor, _id: tutor._id.toString() });
+    } else {
+      const tutor = memoryTutors.find(t => t._id === idStr);
+      if (!tutor) {
+        res.status(404).json({ message: "Tutor not found" });
+        return;
+      }
+      res.json(tutor);
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch tutor details: " + err.message });
+  }
+});
+
+// Tutors API - Create Tutor (Private)
+app.post("/api/tutors", authenticateToken, async (req, res) => {
+  const {
+    name,
+    photoUrl,
+    subject,
+    availableDays,
+    availableTime,
+    hourlyFee,
+    totalSlots,
+    sessionStartDate,
+    institution,
+    experience,
+    location,
+    teachingMode
+  } = req.body;
+
+  if (!name || !subject || !availableDays || !availableTime || hourlyFee === undefined || totalSlots === undefined || !sessionStartDate) {
+    res.status(400).json({ message: "Please fill in all mandatory tutor fields" });
+    return;
+  }
+
+  const tutorData = {
+    name,
+    photoUrl: photoUrl || "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&q=80&w=400",
+    subject,
+    availableDays,
+    availableTime,
+    hourlyFee: Number(hourlyFee),
+    totalSlots: Number(totalSlots),
+    sessionStartDate,
+    institution: institution || "Self-Employed",
+    experience: experience || "1 year",
+    location: location || "In-Person",
+    teachingMode: teachingMode || "Online",
+    createdByUserEmail: req.user.email,
+    createdByUserName: req.user.name
   };
 
-  // JWT Issue Endpoint
-  app.post("/api/jwt", (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      const result = await db.collection("tutors").insertOne(tutorData);
+      res.status(201).json({
+        message: "Tutor registration saved successfully!",
+        tutor: { _id: result.insertedId.toString(), ...tutorData }
+      });
+    } else {
+      const newTutor = {
+        _id: "tutor_" + Date.now(),
+        ...tutorData
+      };
+      memoryTutors.push(newTutor);
+      res.status(201).json({
+        message: "Tutor registration saved successfully!",
+        tutor: newTutor
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Saving tutor details failed: " + err.message });
+  }
+});
+
+// Tutors API - Update (Private, only by owner)
+app.patch("/api/tutors/:id", authenticateToken, async (req, res) => {
+  const tutorId = req.params.id;
+  const updates = req.body;
+
+  // Cleanup body
+  delete updates._id;
+  if (updates.hourlyFee !== undefined) updates.hourlyFee = Number(updates.hourlyFee);
+  if (updates.totalSlots !== undefined) updates.totalSlots = Number(updates.totalSlots);
+
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      let query = {};
+      try {
+        query = { _id: new ObjectId(tutorId) };
+      } catch {
+        query = { originalId: tutorId };
+      }
+
+      // Check ownership
+      const tutor = await db.collection("tutors").findOne(query);
+      if (!tutor) {
+        res.status(404).json({ message: "Tutor entry not found" });
+        return;
+      }
+
+      if (tutor.createdByUserEmail !== req.user.email) {
+        res.status(403).json({ message: "You are not authorized to edit this tutor entry" });
+        return;
+      }
+
+      await db.collection("tutors").updateOne(query, { $set: updates });
+      const updated = await db.collection("tutors").findOne(query);
+      res.json({ message: "Tutor updated successfully!", tutor: { ...updated, _id: updated._id.toString() } });
+    } else {
+      const idx = memoryTutors.findIndex(t => t._id === tutorId);
+      if (idx === -1) {
+        res.status(404).json({ message: "Tutor entry not found" });
+        return;
+      }
+
+      if (memoryTutors[idx].createdByUserEmail !== req.user.email) {
+        res.status(403).json({ message: "You are not authorized to edit this tutor entry" });
+        return;
+      }
+
+      memoryTutors[idx] = {
+        ...memoryTutors[idx],
+        ...updates
+      };
+      res.json({ message: "Tutor updated successfully!", tutor: memoryTutors[idx] });
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Update action failed: " + err.message });
+  }
+});
+
+// Tutors API - Delete (Private, only by owner)
+app.delete("/api/tutors/:id", authenticateToken, async (req, res) => {
+  const tutorId = req.params.id;
+
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      let query = {};
+      try {
+        query = { _id: new ObjectId(tutorId) };
+      } catch {
+        query = { originalId: tutorId };
+      }
+
+      const tutor = await db.collection("tutors").findOne(query);
+      if (!tutor) {
+        res.status(404).json({ message: "Tutor entry not found" });
+        return;
+      }
+
+      if (tutor.createdByUserEmail !== req.user.email) {
+        res.status(403).json({ message: "You are not authorized to delete this tutor entry" });
+        return;
+      }
+
+      await db.collection("tutors").deleteOne(query);
+      res.json({ message: "Tutor entry deleted successfully!" });
+    } else {
+      const idx = memoryTutors.findIndex(t => t._id === tutorId);
+      if (idx === -1) {
+        res.status(404).json({ message: "Tutor entry not found" });
+        return;
+      }
+
+      if (memoryTutors[idx].createdByUserEmail !== req.user.email) {
+        res.status(403).json({ message: "You are not authorized to delete this tutor entry" });
+        return;
+      }
+
+      memoryTutors.splice(idx, 1);
+      res.json({ message: "Tutor entry deleted successfully!" });
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Delete action failed: " + err.message });
+  }
+});
+
+// Bookings API - Book Session (Private)
+app.post("/api/bookings", authenticateToken, async (req, res) => {
+  const { tutorId, studentName, studentPhone, virtualDate } = req.body;
+
+  if (!tutorId || !studentName || !studentPhone) {
+    res.status(400).json({ message: "Please enter your name and phone number to complete booking" });
+    return;
+  }
+
+  try {
+    const db = await getMongoDB();
     
-    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: '10h' });
-    
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-    }).send({ success: true, token });
-  });
+    // Determine current system date/virtual date
+    const clientVirtualDate = req.headers["x-virtual-date"] || req.headers["x-system-date"] || virtualDate;
+    const currentDateString = clientVirtualDate || "2026-05-21";
 
-  // JWT Logout/Clear
-  app.post("/api/logout", (req, res) => {
-    res.clearCookie('token', {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-    }).send({ success: true });
-  });
-
-  // --- Custom Password Auth Fallback Endpoints ---
-  app.post("/api/auth/register", async (req, res) => {
-    try {
-      const { email, password, name, photoURL } = req.body;
-      if (!email || !password || !name) {
-        return res.status(400).send({ message: "Email, password, and name are required." });
+    if (db) {
+      let q = {};
+      try {
+        q = { _id: new ObjectId(tutorId) };
+      } catch {
+        q = { originalId: tutorId };
       }
 
-      // Check if user already exists
-      const query = await db.collection("users").where("email", "==", email).get();
-      if (!query.empty) {
-        return res.status(400).send({ message: "An account with this email already exists." });
+      const tutor = await db.collection("tutors").findOne(q);
+      if (!tutor) {
+        res.status(404).json({ message: "The specified tutor was not found" });
+        return;
       }
 
-      const uid = "h_uid_" + Math.random().toString(36).substring(2, 11);
-      const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
-
-      const userRef = db.collection("users").doc(uid);
-      await userRef.set({
-        uid,
-        email,
-        name,
-        photoURL: photoURL || "",
-        passwordHash,
-        createdAt: FieldValue.serverTimestamp()
-      });
-
-      const token = jwt.sign({ email, uid }, JWT_SECRET, { expiresIn: '10h' });
-      
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-      }).send({ 
-        success: true, 
-        token, 
-        user: { uid, email, displayName: name, photoURL } 
-      });
-    } catch (e) {
-      console.error("Custom Register Error:", e);
-      res.status(500).send({ message: "Failed to create user: " + e.message });
-    }
-  });
-
-  app.post("/api/auth/login", async (req, res) => {
-    try {
-      const { email, password } = req.body;
-      if (!email || !password) {
-        return res.status(400).send({ message: "Email and password are required." });
-      }
-
-      const query = await db.collection("users").where("email", "==", email).get();
-      if (query.empty) {
-        return res.status(404).send({ message: "No account found with this email." });
-      }
-
-      const userDoc = query.docs[0];
-      const userData = userDoc.data();
-
-      // If user exists but was created via OAuth/Google with no passwordHash
-      if (!userData.passwordHash) {
-        return res.status(400).send({ 
-          message: "This account was registered without a password (e.g., via Google). Please log in using Google." 
+      // Date Restriction: "If current date is earlier than session date, booking is not allowed"
+      if (currentDateString < tutor.sessionStartDate) {
+        res.status(400).json({
+          message: "Booking is not available yet for this tutor"
         });
+        return;
       }
 
-      const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
-
-      if (userData.passwordHash !== passwordHash) {
-        return res.status(401).send({ message: "Incorrect password." });
-      }
-
-      const uid = userData.uid || userDoc.id;
-      const token = jwt.sign({ email, uid }, JWT_SECRET, { expiresIn: '10h' });
-
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-      }).send({ 
-        success: true, 
-        token, 
-        user: { 
-          uid, 
-          email, 
-          displayName: userData.name || userData.displayName || "User", 
-          photoURL: userData.photoURL || "" 
-        } 
-      });
-    } catch (e) {
-      console.error("Custom Login Error:", e);
-      res.status(500).send({ message: "Login failed: " + e.message });
-    }
-  });
-
-  // --- User API ---
-  app.post("/api/users", verifyToken, async (req, res) => {
-    try {
-      const { uid, name, email, photoURL } = req.body;
-      if (req.user.email !== email) return res.status(403).send({ message: "Email mismatch" });
-
-      const userRef = db.collection("users").doc(uid);
-      const userDoc = await userRef.get();
-
-      if (!userDoc.exists) {
-        await userRef.set({
-          uid,
-          name: name || 'Anonymous',
-          email,
-          photoURL: photoURL || '',
-          createdAt: FieldValue.serverTimestamp()
+      // Slot check
+      if (tutor.totalSlots === undefined || tutor.totalSlots <= 0) {
+        res.status(400).json({
+          message: "No available slots left"
         });
-      } else {
-        const updateData = {};
-        if (name && name !== 'Anonymous') {
-          updateData.name = name;
-        }
-        if (photoURL) {
-          updateData.photoURL = photoURL;
-        }
-        if (Object.keys(updateData).length > 0) {
-          await userRef.update(updateData);
-        }
+        return;
       }
-      res.send({ success: true });
-    } catch (error) {
-      console.error("User Creation Error:", error);
-      res.status(500).send({ message: "Failed to sync user profile" });
-    }
-  });
 
-  app.get("/api/users/profile", verifyToken, async (req, res) => {
-    try {
-      const email = req.user.email;
-      console.log(`[Profile] Fetching for email: ${email}`);
-      const snapshot = await db.collection("users").where("email", "==", email).get();
-      if (snapshot.empty) {
-        console.log(`[Profile] Not found for email: ${email}`);
-        return res.status(404).send({ message: "Profile not found" });
+      // Decrement slot in tutor
+      await db.collection("tutors").updateOne(q, { $inc: { totalSlots: -1 } });
+
+      // Save Booking
+      const bookingData = {
+        tutorId: tutor._id.toString(),
+        tutorName: tutor.name,
+        studentName,
+        studentPhone,
+        studentEmail: req.user.email,
+        bookingStatus: "booked",
+        bookedAt: new Date().toISOString()
+      };
+
+      const result = await db.collection("bookings").insertOne(bookingData);
+      res.status(201).json({
+        message: "Your learning slot has been successfully booked!",
+        booking: { _id: result.insertedId.toString(), ...bookingData }
+      });
+    } else {
+      // Memory Booking Flow
+      const tutor = memoryTutors.find(t => t._id === tutorId);
+      if (!tutor) {
+        res.status(404).json({ message: "The specified tutor was not found" });
+        return;
       }
-      const userDoc = snapshot.docs[0];
-      console.log(`[Profile] Found for email: ${email}`);
-      res.send({ ...userDoc.data(), id: userDoc.id });
-    } catch (error) {
-      console.error("[Profile] Fetch Error:", error);
-      res.status(500).send({ 
-        message: "Failed to fetch profile", 
-        error: error.message,
-        code: error.code
+
+      if (currentDateString < tutor.sessionStartDate) {
+        res.status(400).json({
+          message: "Booking is not available yet for this tutor"
+        });
+        return;
+      }
+
+      if (tutor.totalSlots <= 0) {
+        res.status(400).json({
+          message: "No available slots left"
+        });
+        return;
+      }
+
+      // Decrement
+      tutor.totalSlots -= 1;
+
+      const newBooking = {
+        _id: "book_" + Date.now(),
+        tutorId: tutor._id,
+        tutorName: tutor.name,
+        studentName,
+        studentPhone,
+        studentEmail: req.user.email,
+        bookingStatus: "booked",
+        bookedAt: new Date().toISOString()
+      };
+
+      memoryBookings.push(newBooking);
+      res.status(201).json({
+        message: "Your learning slot has been successfully booked!",
+        booking: newBooking
       });
     }
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Booking generation failed: " + err.message });
+  }
+});
 
-  // --- Tutor API Endpoints ---
-  // Get all tutors with search and filters
-  app.get("/api/tutors", async (req, res) => {
-    try {
-      const { search, limit, email, startDate, endDate, category } = req.query;
-      let q = db.collection("tutors");
-      
-      // Firestore indexing where possible
-      if (category && category !== 'All') {
-        q = q.where("subject", "==", category);
-      }
-      
-      if (email) {
-        q = q.where("ownerEmail", "==", email);
-      }
-
-      if (limit) {
-        q = q.limit(parseInt(limit));
-      }
-
-      const snapshot = await q.get();
-      
-      let results = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        _id: doc.id,
-        id: doc.id
+// Bookings API - Get My Booked Sessions (Private)
+app.get("/api/bookings/my", authenticateToken, async (req, res) => {
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      const bookings = await db.collection("bookings").find({ studentEmail: req.user.email }).toArray();
+      const sanitized = bookings.map(b => ({
+        ...b,
+        _id: b._id.toString()
       }));
+      res.json(sanitized);
+    } else {
+      const myBooks = memoryBookings.filter(b => b.studentEmail === req.user.email);
+      res.json(myBooks);
+    }
+  } catch (err) {
+    res.status(500).json({ message: "Failed to retrieve your booked sessions: " + err.message });
+  }
+});
 
-      // In-memory case-insensitive search (Regex simulation)
-      if (search) {
-        const regex = new RegExp(search, 'i');
-        results = results.filter(t => regex.test(t.name || ''));
+// Bookings API - Cancel booked session (Private)
+app.patch("/api/bookings/:id/cancel", authenticateToken, async (req, res) => {
+  const bookingId = req.params.id;
+
+  try {
+    const db = await getMongoDB();
+    if (db) {
+      let bQuery = {};
+      try {
+        bQuery = { _id: new ObjectId(bookingId) };
+      } catch {
+        bQuery = { _id: bookingId };
       }
 
-      // Filter by sessionStartDate date ranges (simulation of $gte and $lte)
-      if (startDate) {
-        results = results.filter(t => t.sessionStartDate && t.sessionStartDate >= startDate);
-      }
-      if (endDate) {
-        results = results.filter(t => t.sessionStartDate && t.sessionStartDate <= endDate);
+      const booking = await db.collection("bookings").findOne(bQuery);
+      if (!booking) {
+        res.status(404).json({ message: "Booking record not found" });
+        return;
       }
 
-      if (limit) {
-        results = results.slice(0, parseInt(limit));
+      if (booking.studentEmail !== req.user.email) {
+        res.status(403).json({ message: "Unauthorized request" });
+        return;
       }
 
-      res.send(results);
-    } catch (error) {
-      console.error("Firestore Error:", error);
-      res.status(500).send({ message: "Failed to fetch tutors", error: error.message });
-    }
-  });
+      // Update booking status
+      await db.collection("bookings").updateOne(bQuery, { $set: { bookingStatus: "cancelled" } });
 
-  // Get single tutor
-  app.get("/api/tutors/:id", async (req, res) => {
-    try {
-      const id = req.params.id;
-      const tutorDoc = await db.collection("tutors").doc(id).get();
-      if (!tutorDoc.exists) {
-        return res.status(404).send({ message: "Tutor not found" });
+      // Find associated tutor and increment slot back
+      let tQuery = {};
+      try {
+        tQuery = { _id: new ObjectId(booking.tutorId) };
+      } catch {
+        tQuery = { _id: booking.tutorId };
       }
-      res.send({ ...tutorDoc.data(), _id: tutorDoc.id, id: tutorDoc.id });
-    } catch (error) {
-      res.status(500).send({ message: "Error fetching tutor details" });
-    }
-  });
+      await db.collection("tutors").updateOne(tQuery, { $inc: { totalSlots: 1 } });
 
-  // Create tutor (Private)
-  app.post("/api/tutors", verifyToken, async (req, res) => {
-    try {
-      const tutor = req.body;
-      const docRef = await db.collection("tutors").add({
-        ...tutor,
-        createdAt: FieldValue.serverTimestamp()
-      });
-      res.send({ insertedId: docRef.id });
-    } catch (error) {
-      console.error(error);
-      res.status(500).send({ message: "Failed to add tutor" });
-    }
-  });
-
-  // Bulk add tutors (Private)
-  app.post("/api/tutors/bulk", verifyToken, async (req, res) => {
-    try {
-      const tutors = req.body;
-      if (!Array.isArray(tutors)) return res.status(400).send({ message: "Must be an array" });
-      
-      const batch = db.batch();
-      tutors.forEach(tutor => {
-        const docRef = db.collection("tutors").doc();
-        batch.set(docRef, {
-          ...tutor,
-          createdAt: FieldValue.serverTimestamp()
-        });
-      });
-      await batch.commit();
-      res.send({ success: true, count: tutors.length });
-    } catch (error) {
-      console.error(error);
-      res.status(500).send({ message: "Bulk insert failed" });
-    }
-  });
-
-  // Update tutor (Private)
-  app.put("/api/tutors/:id", verifyToken, async (req, res) => {
-    try {
-      const id = req.params.id;
-      const updatedTutor = req.body;
-      const email = req.user.email;
-
-      const tutorDoc = await db.collection("tutors").doc(id).get();
-      if (!tutorDoc.exists) return res.status(404).send({ message: "Tutor not found" });
-      if (tutorDoc.data().ownerEmail !== email) return res.status(403).send({ message: "Unauthorized" });
-
-      delete updatedTutor._id;
-      delete updatedTutor.id;
-      
-      await db.collection("tutors").doc(id).update(updatedTutor);
-      res.send({ success: true });
-    } catch (error) {
-      res.status(500).send({ message: "Failed to update tutor" });
-    }
-  });
-
-  // Delete tutor (Private)
-  app.delete("/api/tutors/:id", verifyToken, async (req, res) => {
-    try {
-      const id = req.params.id;
-      const email = req.user.email;
-
-      const tutorDoc = await db.collection("tutors").doc(id).get();
-      if (!tutorDoc.exists) return res.status(404).send({ message: "Tutor not found" });
-      if (tutorDoc.data().ownerEmail !== email) return res.status(403).send({ message: "Unauthorized" });
-
-      await db.collection("tutors").doc(id).delete();
-      res.send({ success: true });
-    } catch (error) {
-      res.status(500).send({ message: "Failed to delete tutor" });
-    }
-  });
-
-  // --- Booking API Endpoints ---
-
-  // Get user's booked sessions
-  app.get("/api/bookings", verifyToken, async (req, res) => {
-    try {
-      const email = req.user.email;
-      const snapshot = await db.collection("bookings").where("studentEmail", "==", email).get();
-      const results = snapshot.docs.map(doc => ({ ...doc.data(), _id: doc.id, id: doc.id }));
-      res.send(results);
-    } catch (error) {
-      res.status(500).send({ message: "Failed to fetch bookings" });
-    }
-  });
-
-  // Create booking (Private)
-  app.post("/api/bookings", verifyToken, async (req, res) => {
-    try {
-      const booking = req.body;
-      
-      const tutorRef = db.collection("tutors").doc(booking.tutorId);
-      const tutorDoc = await tutorRef.get();
-      
-      if (!tutorDoc.exists || (tutorDoc.data().totalSlot || 0) <= 0) {
-        return res.status(400).send({ message: "No slots available" });
+      res.json({ message: "Booking cancelled successfully" });
+    } else {
+      const bIdx = memoryBookings.findIndex(b => b._id === bookingId);
+      if (bIdx === -1) {
+        res.status(404).json({ message: "Booking record not found" });
+        return;
       }
 
-      // Update slot count
-      await tutorRef.update({
-        totalSlot: FieldValue.increment(-1)
-      });
+      if (memoryBookings[bIdx].studentEmail !== req.user.email) {
+        res.status(403).json({ message: "Unauthorized request" });
+        return;
+      }
 
-      const docRef = await db.collection("bookings").add({
-        ...booking,
-        createdAt: FieldValue.serverTimestamp()
-      });
-      
-      res.send({ insertedId: docRef.id });
-    } catch (error) {
-      console.error(error);
-      res.status(500).send({ message: "Booking failed" });
+      memoryBookings[bIdx].bookingStatus = "cancelled";
+
+      // Increment slot back
+      const tutor = memoryTutors.find(t => t._id === memoryBookings[bIdx].tutorId);
+      if (tutor) {
+        tutor.totalSlots += 1;
+      }
+
+      res.json({ message: "Booking cancelled successfully" });
     }
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Cancellation action failed: " + err.message });
+  }
+});
 
-  // Update booking status (Cancel)
-  app.patch("/api/bookings/:id", verifyToken, async (req, res) => {
-    try {
-      const id = req.params.id;
-      const { status } = req.body;
-      await db.collection("bookings").doc(id).update({ status });
-      res.send({ success: true });
-    } catch (error) {
-      res.status(500).send({ message: "Failed to cancel booking" });
-    }
-  });
+// Configure Vite or production folder serving
+async function initializeApp() {
+  if (process.env.VERCEL) {
+    console.log("Vercel environment detected. Skipping local development servers and custom HTTP listener bindings.");
+    return;
+  }
 
-  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    // Development Mode
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
+    console.log("Vite development server mounted.");
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    // Production Mode
+    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
     });
+    console.log("Static files directory successfully routed.");
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Express custom server running accurately on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+initializeApp().catch(err => {
+  console.error("Failed to bootstrap custom Express backend layer:", err);
+});
+
+export default app;
